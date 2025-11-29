@@ -3,7 +3,7 @@
 #########可修改区#########
 
 # 这里可以自己添加、修改 CloudflareST 的运行参数
-cstconfig="-n 700 -url https://st.1275905.xyz/ -sl 20 -tl 240 -tll 45"
+cstconfig=" "
 # 检测国外连接参数
 word="google.com"
 # 检测国内连接参数
