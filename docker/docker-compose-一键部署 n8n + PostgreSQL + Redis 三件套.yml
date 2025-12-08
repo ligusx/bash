@@ -1,37 +1,5 @@
 services:
-  postgres:
-    image: postgres:15
-    container_name: n8n-postgres
-    environment:
-      POSTGRES_DB: n8n
-      POSTGRES_USER: n8n
-      POSTGRES_PASSWORD: your_strong_postgres_password
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    container_name: n8n-redis
-    command: redis-server --appendonly yes --requirepass your_strong_redis_password
-    volumes:
-      - redis_data:/data
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "your_strong_redis_password", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
+  #n8n
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n-app
@@ -41,20 +9,27 @@ services:
       DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_PORT: 5432
       DB_POSTGRESDB_USER: n8n
-      DB_POSTGRESDB_PASSWORD: your_strong_postgres_password
+      DB_POSTGRESDB_PASSWORD: your_strong_postgres_password   #postgres数据库密码
       DB_POSTGRESDB_DATABASE: n8n
       DB_POSTGRESDB_SCHEMA: public
 
       # === Redis 配置 ===
       QUEUE_BULL_REDIS_HOST: redis
       QUEUE_BULL_REDIS_PORT: 6379
-      QUEUE_BULL_REDIS_PASSWORD: your_strong_redis_password
+      QUEUE_BULL_REDIS_PASSWORD: your_strong_redis_password   #redis密码
       # 可选：指定 Redis DB（默认 0）
       # QUEUE_BULL_REDIS_DB: 0
 
       # === 时区与通用设置 ===
       GENERIC_TIMEZONE: Asia/Shanghai
       TZ: Asia/Shanghai
+      N8N_SECURE_COOKIE: false
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: false
+      N8N_RUNNERS_ENABLED: true
+      N8N_GIT_NODE_DISABLE_BARE_REPOS: true
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: true
+      N8N_DEFAULT_LOCALE: zh-CN
+      N8N_PORT: 80
 
       # === 启用队列模式（关键！）===
       EXECUTION_MODE: queue
@@ -63,10 +38,21 @@ services:
       # N8N_HOST: your-domain.com
       # N8N_PROTOCOL: https
       # WEBHOOK_TUNNEL_URL: https://your-domain.com/
+      N8N_HOST: 10.0.0.101
+      N8N_PROTOCOL: http
+      WEBHOOK_TUNNEL_URL: http://10.0.0.101/
+
+      #如n8n没有启动，在终端中更改目录用户组
+
+      # 设置 n8n_data 目录权限（n8n 容器以 node 用户运行）
+      #sudo chown -R 1000:1000 n8n_data
+      #sudo chmod -R 755 n8n_data
     volumes:
-      - n8n_data:/home/node/.n8n
+      - ./n8n_data:/home/node/.n8n
+      - ./n8n_data/pyvenv:/home/node/venv
+      - ./n8n-chinese-ui:/usr/local/lib/node_modules/n8n/node_modules/n8n-editor-ui/dist
     ports:
-      - "5678:5678"
+      - "80:80"
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,7 +60,38 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-volumes:
-  postgres_data:
-  redis_data:
-  n8n_data:
+  #postgres数据库
+  postgres:
+    image: postgres:15
+    container_name: n8n-postgres
+    environment:
+      POSTGRES_DB: n8n
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD: your_strong_postgres_password   #postgres数据库密码
+    volumes:
+      - ./n8n_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
+  #redis数据库缓存
+  redis:
+    image: redis:7-alpine
+    container_name: n8n-redis
+    command: redis-server --appendonly yes --requirepass your_strong_redis_password        #redis密码
+    volumes:
+      - ./n8n_redis_data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "your_strong_redis_password", "ping"]    #redis密码同上
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      
