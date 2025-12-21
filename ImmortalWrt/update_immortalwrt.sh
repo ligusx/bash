@@ -6,10 +6,7 @@
 #===============================
 
 # 本地版本文件
-VERSION_FILE="/etc/immortalwrt_version"
-
-# 本地初始化版本（首次无文件时写入）
-INIT_VERSION="x86-64--2025年12月01日12时28分"
+VERSION_FILE="/etc/auto-update/immortalwrt_version"
 
 # GitHub Releases API （你的仓库）
 REPO_API="https://api.github.com/repos/ligusx-build/build-immortalwrt/releases/latest"
@@ -21,10 +18,21 @@ FW_NAME="immortalwrt-x86-64-generic-squashfs-combined-efi.img.gz"
 FW_PATH="/tmp/${FW_NAME}"
 
 #------------------------------
-# 1. 初始化本地版本文件
+# 1. 初始化本地版本文件（首次运行时从GitHub获取）
 #------------------------------
 if [ ! -f "$VERSION_FILE" ]; then
+    echo "首次运行，正在获取最新版本号..."
+    
+    # 从GitHub获取最新tag
+    INIT_VERSION=$(curl -s "$REPO_API" | grep '"tag_name":' | cut -d '"' -f4)
+    
+    if [ -z "$INIT_VERSION" ]; then
+        echo "❌ 首次运行无法获取GitHub版本号，请检查网络"
+        exit 1
+    fi
+    
     echo "$INIT_VERSION" > "$VERSION_FILE"
+    echo "已初始化本地版本号为: $INIT_VERSION"
 fi
 
 LOCAL_VERSION=$(cat "$VERSION_FILE")
@@ -93,5 +101,3 @@ echo "版本号已更新到: $LATEST_VERSION"
 #------------------------------
 echo "开始执行 ImmortalWrt 升级（sysupgrade -c）..."
 sysupgrade -c "$FW_PATH"
-
-# sysupgrade 执行后自动重启，不会继续往下执行
