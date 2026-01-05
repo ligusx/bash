@@ -8,18 +8,18 @@
 LOG_FILE="/www/wwwlogs/vaultwarden.log"  # 请修改为实际的日志文件路径
 
 # 授权IP列表（支持多个IP，用空格分隔）
-AUTHORIZED_IPS=("127.0.0.1" "112.37.125.80" "74.48.136.189")
+AUTHORIZED_IPS=("127.0.0.1" "10.0.0.1" "192.168.1.1")
 
 # 邮件告警配置
-MAIL_TO="986989222@qq.com"                    # 接收告警的邮箱
-MAIL_FROM="ligus520@126.com"                  # 发件人邮箱
+MAIL_TO=""                    # 接收告警的邮箱
+MAIL_FROM=""                  # 发件人邮箱
 MAIL_SUBJECT="[Vaultwarden告警] 检测到非授权IP登录"
 
 # SMTP服务器配置（使用126邮箱）
-SMTP_SERVER="smtp.126.com"     # SMTP服务器地址
+SMTP_SERVER=""     # SMTP服务器地址
 SMTP_PORT="465"                # SMTP端口：465(SSL)
-SMTP_USER="ligus520@126.com"   # SMTP用户名（完整邮箱地址）
-SMTP_PASSWORD="XRddD645ArdrzqDL" # SMTP密码
+SMTP_USER=""   # SMTP用户名（完整邮箱地址）
+SMTP_PASSWORD="" # SMTP密码
 
 # 脚本运行配置
 LOCK_FILE="/tmp/vaultwarden_monitor.lock"   # 锁文件，防止重复运行
