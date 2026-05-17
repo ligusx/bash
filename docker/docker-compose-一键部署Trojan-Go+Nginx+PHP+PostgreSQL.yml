@@ -17,8 +17,8 @@ services:
     image: p4gefau1t/trojan-go:latest 
     container_name: prod_trojan_go
     volumes:
-      - /root/trojan-go/nginx/ssl:/ssl:ro
-      - /root/trojan-go/trojan-go/config.json:/etc/trojan-go/config.json:ro
+      - ./nginx/ssl:/ssl:ro
+      - ./trojan-go/config.json:/etc/trojan-go/config.json:ro
     ports:
       - "443:443"
       # 80 端口留给 acme.sh 验证或者 nginx 直接处理
