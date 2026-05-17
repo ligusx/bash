@@ -71,7 +71,7 @@ services:
 
   # ========== MariaDB 服务 ==========
   mariadb:
-    image: mariadb:11.4-alpine
+    image: mariadb:11.5
     container_name: prod_mariadb
     environment:
       MARIADB_ROOT_PASSWORD: your_root_password     # 新增：root 密码
@@ -83,6 +83,9 @@ services:
     networks:
       - app-network
     restart: unless-stopped
+    
+volumes:
+    mariadb_data:
     
 networks:
   app-network:
