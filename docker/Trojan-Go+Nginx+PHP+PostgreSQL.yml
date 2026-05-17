@@ -1,0 +1,90 @@
+services:
+  # ========== acme.sh 证书管理（新） ==========
+  acme-sh:
+    image: neilpang/acme.sh:latest
+    container_name: prod_acme_sh
+    volumes:
+      - ./nginx/ssl:/ssl_out          # 证书输出到共享目录
+      - ./acme.sh/account.conf:/acme.sh/account.conf:ro
+      - ./app/.well-known/acme-challenge:/var/www/html/.well-known/acme-challenge:rw
+    command: daemon                    # 持续运行，自动续期
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # ========== Trojan-Go 代理层  ==========
+  trojan-go:
+    image: p4gefau1t/trojan-go:latest 
+    container_name: prod_trojan_go
+    volumes:
+      - /root/trojan-go/nginx/ssl:/ssl:ro
+      - /root/trojan-go/trojan-go/config.json:/etc/trojan-go/config.json:ro
+    ports:
+      - "443:443"
+      # 80 端口留给 acme.sh 验证或者 nginx 直接处理
+    depends_on:
+      - nginx
+    networks:
+      - app-network
+    restart: unless-stopped
+    # 如果需要指定版本，把 latest 换成具体的 tag 就行
+
+  # ========== Nginx 服务（回落） ==========
+  nginx:
+    image: nginx:stable-alpine
+    container_name: prod_nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./app:/var/www/html:rw
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro    # 挂载证书（新）
+      - ./app/.well-known/acme-challenge:/var/www/html/.well-known/acme-challenge:rw
+    depends_on:
+      - php
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # ========== PHP-FPM 服务 ==========
+  php:
+    image: php:8.3-fpm-alpine
+    command: >
+      sh -c "apk add --no-cache postgresql-dev &&
+             docker-php-ext-install pdo_pgsql &&
+             php-fpm"
+    container_name: prod_php
+    volumes:
+      - ./app:/var/www/html:rw
+    environment:
+      DB_HOST: pgsql
+      DB_PORT: 5432
+      DB_NAME: prod_db
+      DB_USER: prod_user
+      DB_PASSWORD: your_secure_password
+    depends_on:
+      - pgsql
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # ========== PostgreSQL 服务 ==========
+  pgsql:
+    image: postgres:16-alpine
+    container_name: prod_pgsql
+    environment:
+      POSTGRES_DB: prod_db
+      POSTGRES_USER: prod_user
+      POSTGRES_PASSWORD: your_secure_password
+    volumes:
+      - pgsql_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    restart: unless-stopped
+
+volumes:
+  pgsql_data:
+
+networks:
+  app-network:
+    driver: bridge
