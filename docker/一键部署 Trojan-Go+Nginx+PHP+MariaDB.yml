@@ -1,0 +1,89 @@
+services:
+  # ========== acme.sh 证书管理（新） ==========
+  acme-sh:
+    image: neilpang/acme.sh:latest
+    container_name: prod_acme_sh
+    volumes:
+      - ./nginx/ssl:/ssl_out          # 证书输出到共享目录
+      - ./acme.sh/account.conf:/acme.sh/account.conf:ro
+      - ./app/.well-known/acme-challenge:/var/www/html/.well-known/acme-challenge:rw
+    command: daemon                    # 持续运行，自动续期
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # ========== Trojan-Go 代理层 (改用 Potterli20/fork 镜像) ==========
+  trojan-go:
+    image: p4gefau1t/trojan-go:latest  # 作者提供的 Docker 镜像[citation:1]
+    container_name: prod_trojan_go
+    volumes:
+      - ./nginx/ssl:/ssl:ro
+      - ./trojan-go/config.json:/etc/trojan-go/config.json:ro
+    ports:
+      - "443:443"
+      # 80 端口留给 acme.sh 验证或者 nginx 直接处理
+    depends_on:
+      - nginx
+    networks:
+      - app-network
+    restart: unless-stopped
+    # 如果需要指定版本，把 latest 换成具体的 tag 就行
+
+  # ========== Nginx 服务（回落） ==========
+  nginx:
+    image: nginx:stable-alpine
+    container_name: prod_nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./app:/var/www/html:rw
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro    # 挂载证书（新）
+      - ./app/.well-known/acme-challenge:/var/www/html/.well-known/acme-challenge:ro
+    depends_on:
+      - php
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # ========== PHP-FPM 服务 ==========
+  php:
+    image: php:8.3-fpm-alpine
+    command: >
+      sh -c "apk add --no-cache mariadb-dev &&
+             docker-php-ext-install pdo_mysql &&
+             php-fpm"
+    container_name: prod_php
+    volumes:
+      - ./app:/var/www/html:rw
+    environment:
+      DB_HOST: mariadb          # 改服务名
+      DB_PORT: 3306
+      DB_NAME: prod_db
+      DB_USER: prod_user
+      DB_PASSWORD: your_secure_password
+    depends_on:
+      - mariadb
+    networks:
+      - app-network
+    restart: unless-stopped
+
+
+  # ========== MariaDB 服务 ==========
+  mariadb:
+    image: mariadb:11.4-alpine
+    container_name: prod_mariadb
+    environment:
+      MARIADB_ROOT_PASSWORD: your_root_password     # 新增：root 密码
+      MARIADB_DATABASE: prod_db
+      MARIADB_USER: prod_user
+      MARIADB_PASSWORD: your_secure_password
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    networks:
+      - app-network
+    restart: unless-stopped
+    
+networks:
+  app-network:
+    driver: bridge
