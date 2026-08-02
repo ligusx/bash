@@ -1344,6 +1344,18 @@ perform_backup() {
     echo "校验文件创建完成"
     
     # ============================================================
+    # 复制脚本自身到备份目录
+    # ============================================================
+    local script_path
+    script_path=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
+    if [ -f "$script_path" ]; then
+        cp "$script_path" "$backup_folder/" 2>/dev/null && \
+            echo "[*] 已将备份脚本复制到备份目录" || \
+            echo "[!] 复制备份脚本到备份目录失败"
+    fi
+    # ============================================================
+	
+    # ============================================================
     # 如果指定了上传，则上传到网盘
     # ============================================================
     if [ "$upload_after_backup" = "true" ]; then
@@ -1380,18 +1392,6 @@ perform_backup() {
             rclone purge "${RCLONE_REMOTE}:${RCLONE_PATH%/}/${dir}" 2>/dev/null
         done
     fi
-	
-    # ============================================================
-    # 复制脚本自身到备份目录
-    # ============================================================
-    local script_path
-    script_path=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
-    if [ -f "$script_path" ]; then
-        cp "$script_path" "$backup_folder/" 2>/dev/null && \
-            echo "[*] 已将备份脚本复制到备份目录" || \
-            echo "[!] 复制备份脚本到备份目录失败"
-    fi
-    # ============================================================
 	
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] 备份完成: ${backup_name}"
     echo "备份位置: ${backup_folder}"
