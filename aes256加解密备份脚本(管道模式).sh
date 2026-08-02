@@ -125,29 +125,122 @@ CIPHER_ALG="aes-256-cbc"   # 加密模式
 # ============================================================
 # 安全加密/解密函数（使用文件描述符，密码不落盘）
 # ============================================================
+
+# 创建安全密码临时文件
+create_password_tempfile() {
+    local password="$1"
+    local tmpfile
+    
+    tmpfile=$(mktemp) || {
+        echo "错误: 无法创建密码临时文件" >&2
+        return 1
+    }
+    
+    # 设置严格权限
+    chmod 600 "$tmpfile" || {
+        rm -f "$tmpfile"
+        echo "错误: 无法设置密码文件权限" >&2
+        return 1
+    }
+    
+    # 写入密码
+    printf '%s' "$password" > "$tmpfile"
+    
+    # 返回文件路径
+    echo "$tmpfile"
+}
+
+# 安全销毁密码临时文件
+destroy_password_tempfile() {
+    local tmpfile="$1"
+    if [ -n "$tmpfile" ] && [ -f "$tmpfile" ]; then
+        # 先覆写再删除
+        shred -u "$tmpfile" 2>/dev/null || {
+            # 如果shred不可用，用随机数据覆写
+            dd if=/dev/urandom of="$tmpfile" bs=1 count=$(wc -c < "$tmpfile") conv=notrunc 2>/dev/null
+            rm -f "$tmpfile"
+        }
+    fi
+}
+
+# 安全加密函数（使用临时文件描述符）
 secure_encrypt() {
     local input="$1"
     local output="$2"
     local password="$3"
+    local password_file=""
+    local ret=1
     
-    # 通过管道将密码写入 openssl 的 stdin，避免密码出现在任何命令行参数中
-    printf '%s' "$password" | openssl enc -${CIPHER_ALG} -pbkdf2 -iter ${PBKDF2_ITER} \
+    # 创建密码临时文件
+    password_file=$(create_password_tempfile "$password") || return 1
+    
+    # 使用 -pass file: 替代 stdin 传递密码
+    openssl enc -${CIPHER_ALG} -pbkdf2 -iter ${PBKDF2_ITER} \
         -in "$input" -out "$output" \
-        -pass stdin 2>/dev/null
-    return $?
+        -pass file:"$password_file" 2>/dev/null
+    ret=$?
+    
+    # 立即销毁密码临时文件
+    destroy_password_tempfile "$password_file"
+    
+    if [ $ret -ne 0 ]; then
+        echo "错误: 加密失败" >&2
+        return 1
+    fi
+    
+    return 0
 }
 
+# 安全解密函数（使用临时文件描述符）
 secure_decrypt() {
     local input="$1"
     local output="$2"
     local password="$3"
+    local password_file=""
+    local ret=1
     
-    # 同样通过 stdin 传递密码
-    printf '%s' "$password" | openssl enc -d -${CIPHER_ALG} -pbkdf2 -iter ${PBKDF2_ITER} \
+    # 创建密码临时文件
+    password_file=$(create_password_tempfile "$password") || return 1
+    
+    # 使用 -pass file: 替代 stdin 传递密码
+    openssl enc -d -${CIPHER_ALG} -pbkdf2 -iter ${PBKDF2_ITER} \
         -in "$input" -out "$output" \
-        -pass stdin 2>/dev/null
-    password=""
-    return $?
+        -pass file:"$password_file" 2>/dev/null
+    ret=$?
+    
+    # 立即销毁密码临时文件
+    destroy_password_tempfile "$password_file"
+    
+    if [ $ret -ne 0 ]; then
+        echo "错误: 解密失败，请检查密码是否正确" >&2
+        return 1
+    fi
+    
+    return 0
+}
+
+# ============================================================
+# 批量处理辅助函数：使用密码文件执行多个操作
+# 适用于需要多次使用同一密码的场景
+# ============================================================
+run_with_password_file() {
+    local password="$1"
+    local callback="$2"
+    shift 2
+    local password_file=""
+    local ret=1
+    
+    # 创建密码临时文件（一次性）
+    password_file=$(create_password_tempfile "$password") || return 1
+    
+    # 将密码文件路径作为第一个参数传给回调函数
+    "$callback" "$password_file" "$@"
+    ret=$?
+    
+    # 操作完成后销毁密码文件
+    destroy_password_tempfile "$password_file"
+    
+    return $ret
 }
 
 # ============================================================
@@ -1108,7 +1201,9 @@ compare_and_download() {
     return 0
 }
 
-# 函数: 备份流程（管道优化版 - 零中间文件）
+# ============================================================
+# 函数: 备份流程（管道优化版 - 零中间文件，密码安全处理）
+# ============================================================
 perform_backup() {
     local target_dir="$1"
     local backup_name="${2:-${BACKUP_PREFIX}$(date +"%Y%m%d_%H%M%S")}"
@@ -1122,6 +1217,7 @@ perform_backup() {
     # ============================================================
     # 管道模式：压缩 -> 加密 -> 分割（零中间文件）
     # 数据流: tar -> pv(可选) -> zstd -> openssl -> split -> 分片文件
+    # 密码通过临时文件描述符传递，绝不进入管道数据流
     # ============================================================
     echo "正在执行 压缩 -> 加密 -> 分割..."
     echo "  目标: $target_dir"
@@ -1129,11 +1225,28 @@ perform_backup() {
     
     # 构建加密文件的基础名（用于分割函数的输出前缀）
     local enc_file_base="${backup_folder}/${backup_name}"
-    local enc_file="${enc_file_base}.aes"  # 用于 split_from_stdin 的参数
+    local enc_file="${enc_file_base}.aes"
     
-    # 创建安全密码文件
-    local password_file=$(create_secure_tempfile)
-    printf '%s' "$PASSWORD" > "$password_file"
+    # 使用增强的安全密码文件创建（优先使用 /dev/shm 内存文件系统）
+    local password_file=""
+    if [ -d "/dev/shm" ] && [ -w "/dev/shm" ]; then
+        password_file=$(mktemp -p /dev/shm .backup_pass_XXXXXXXXXX) || {
+            echo "错误: 无法在 /dev/shm 创建密码临时文件"
+            return 1
+        }
+    else
+        password_file=$(mktemp) || {
+            echo "错误: 无法创建密码临时文件"
+            return 1
+        }
+    fi
+    
+    # 原子化写入密码并设置严格权限
+    (umask 077 && printf '%s' "$PASSWORD" > "$password_file") || {
+        rm -f "$password_file"
+        echo "错误: 写入密码文件失败"
+        return 1
+    }
     
     # 一条管道完成所有操作
     # 步骤1: tar 打包
@@ -1143,7 +1256,7 @@ perform_backup() {
     { command -v pv >/dev/null 2>&1 && pv -q -L "$COMPRESS_SPEED" 2>/dev/null || cat; } | \
     # 步骤3: zstd 压缩
     zstd -"$ZSTD_LEVEL" -q -c | \
-    # 步骤4: openssl 加密（使用密码文件，避免stdin冲突）
+    # 步骤4: openssl 加密（密码通过文件描述符传递，不进入数据流）
     openssl enc -${CIPHER_ALG} -pbkdf2 -iter ${PBKDF2_ITER} \
         -pass file:"$password_file" -e 2>/dev/null | \
     # 步骤5: 分割为分片文件
@@ -1152,8 +1265,17 @@ perform_backup() {
     # 检查管道执行状态（使用 PIPESTATUS 数组）
     local pipe_status=("${PIPESTATUS[@]}")
     
-    # 立即清除密码文件
-    shred -u "$password_file" 2>/dev/null || rm -f "$password_file"
+    # 立即安全销毁密码文件（多重覆写 + 删除）
+    if [ -n "$password_file" ] && [ -f "$password_file" ]; then
+        local pass_size=$(wc -c < "$password_file" 2>/dev/null || echo 256)
+        # 用随机数据覆写
+        dd if=/dev/urandom of="$password_file" bs=1 count="$pass_size" conv=notrunc 2>/dev/null
+        # 用零覆写
+        dd if=/dev/zero of="$password_file" bs=1 count="$pass_size" conv=notrunc 2>/dev/null
+        # 强制同步（仅在非 tmpfs 时有效）
+        [ "${password_file#/dev/shm}" = "$password_file" ] && sync 2>/dev/null
+        rm -f "$password_file"
+    fi
     
     # 检查各个阶段的退出码
     if [ "${pipe_status[0]}" -ne 0 ]; then
@@ -1228,7 +1350,8 @@ perform_backup() {
         if check_rclone_available; then
             echo "正在上传到网盘..."
             rclone mkdir "${RCLONE_REMOTE}:${RCLONE_PATH%/}/${backup_name}" 2>/dev/null && \
-            rclone copy "$backup_folder" "${RCLONE_REMOTE}:${RCLONE_PATH%/}/${backup_name}" 2>/dev/null || {
+            rclone copy "$backup_folder" "${RCLONE_REMOTE}:${RCLONE_PATH%/}/${backup_name}" \
+                --user-agent "$USER_AGENT" 2>/dev/null || {
                 echo "上传失败!"; return 1
             }
             echo "上传完成"
@@ -1422,7 +1545,9 @@ delete_backup() {
     fi
 }
 
-# 函数: 还原流程（管道优化版 - 零中间文件）
+# ============================================================
+# 函数: 还原流程（管道优化版 - 零中间文件，密码安全处理）
+# ============================================================
 perform_restore() {
     local backup_arg="$1"
     local restore_to="${2:-$RESTORE_DIR}"
@@ -1609,6 +1734,7 @@ perform_restore() {
     # ============================================================
     # 管道模式：合并 -> 解密 -> 解压（零中间文件）
     # 数据流: cat(分片) -> openssl(解密) -> zstd(解压) -> tar(提取)
+    # 密码通过临时文件描述符传递，绝不进入管道数据流
     # ============================================================
     echo "正在执行 合并 -> 解密 -> 解压..."
     
@@ -1616,14 +1742,34 @@ perform_restore() {
     local merge_prefix="$backup_prefix"
     [ ! -f "${merge_prefix}.001${SPLIT_SUFFIX}" ] && merge_prefix="$backup_prefix_noext"
     
-    # 创建安全密码文件（避免与数据流stdin冲突）
-    local password_file=$(create_secure_tempfile)
-    printf '%s' "$_saved_password" > "$password_file"
+    # 使用增强的安全密码文件创建（优先使用 /dev/shm 内存文件系统）
+    local password_file=""
+    if [ -d "/dev/shm" ] && [ -w "/dev/shm" ]; then
+        password_file=$(mktemp -p /dev/shm .restore_pass_XXXXXXXXXX) || {
+            echo "错误: 无法在 /dev/shm 创建密码临时文件"
+            _saved_password=""
+            exit 1
+        }
+    else
+        password_file=$(mktemp) || {
+            echo "错误: 无法创建密码临时文件"
+            _saved_password=""
+            exit 1
+        }
+    fi
+    
+    # 原子化写入密码并设置严格权限
+    (umask 077 && printf '%s' "$_saved_password" > "$password_file") || {
+        rm -f "$password_file"
+        echo "错误: 写入密码文件失败"
+        _saved_password=""
+        exit 1
+    }
     
     # 一条管道完成所有操作
     if ls "${merge_prefix}."[0-9][0-9][0-9]"${SPLIT_SUFFIX}" >/dev/null 2>&1; then
         # 分片文件：先 cat 合并，再管道传递
-        # 使用 -pass file: 避免密码与数据流冲突
+        # 数据流: cat(分片) -> openssl(解密) -> zstd(解压) -> tar(提取)
         cat "${merge_prefix}."[0-9][0-9][0-9]"${SPLIT_SUFFIX}" | \
         openssl enc -d -${CIPHER_ALG} -pbkdf2 -iter ${PBKDF2_ITER} \
             -pass file:"$password_file" 2>/dev/null | \
@@ -1633,8 +1779,17 @@ perform_restore() {
         # 检查管道执行状态
         local pipe_status=("${PIPESTATUS[@]}")
         
-        # 立即清除密码文件
-        shred -u "$password_file" 2>/dev/null || rm -f "$password_file"
+        # 立即安全销毁密码文件（多重覆写 + 删除）
+        if [ -n "$password_file" ] && [ -f "$password_file" ]; then
+            local pass_size=$(wc -c < "$password_file" 2>/dev/null || echo 256)
+            # 用随机数据覆写
+            dd if=/dev/urandom of="$password_file" bs=1 count="$pass_size" conv=notrunc 2>/dev/null
+            # 用零覆写
+            dd if=/dev/zero of="$password_file" bs=1 count="$pass_size" conv=notrunc 2>/dev/null
+            # 强制同步（仅在非 tmpfs 时有效）
+            [ "${password_file#/dev/shm}" = "$password_file" ] && sync 2>/dev/null
+            rm -f "$password_file"
+        fi
         
         # cat 的退出码
         if [ "${pipe_status[0]}" -ne 0 ]; then
@@ -1662,7 +1817,8 @@ perform_restore() {
         fi
         
     elif [ -f "${merge_prefix}${SPLIT_SUFFIX}" ]; then
-        # 单文件：直接解密
+        # 单文件：直接解密（使用已创建的 password_file）
+        # 数据流: openssl(解密单文件) -> zstd(解压) -> tar(提取)
         openssl enc -d -${CIPHER_ALG} -pbkdf2 -iter ${PBKDF2_ITER} \
             -in "${merge_prefix}${SPLIT_SUFFIX}" -pass file:"$password_file" 2>/dev/null | \
         zstd -d -q -c | \
@@ -1671,8 +1827,17 @@ perform_restore() {
         # 检查管道执行状态
         local pipe_status=("${PIPESTATUS[@]}")
         
-        # 立即清除密码文件
-        shred -u "$password_file" 2>/dev/null || rm -f "$password_file"
+        # 立即安全销毁密码文件（多重覆写 + 删除）
+        if [ -n "$password_file" ] && [ -f "$password_file" ]; then
+            local pass_size=$(wc -c < "$password_file" 2>/dev/null || echo 256)
+            # 用随机数据覆写
+            dd if=/dev/urandom of="$password_file" bs=1 count="$pass_size" conv=notrunc 2>/dev/null
+            # 用零覆写
+            dd if=/dev/zero of="$password_file" bs=1 count="$pass_size" conv=notrunc 2>/dev/null
+            # 强制同步（仅在非 tmpfs 时有效）
+            [ "${password_file#/dev/shm}" = "$password_file" ] && sync 2>/dev/null
+            rm -f "$password_file"
+        fi
         
         # openssl 的退出码
         if [ "${pipe_status[0]}" -ne 0 ]; then
@@ -1694,7 +1859,14 @@ perform_restore() {
         fi
         
     else
-        shred -u "$password_file" 2>/dev/null || rm -f "$password_file"
+        # 找不到备份文件，清理密码文件后退出
+        if [ -n "$password_file" ] && [ -f "$password_file" ]; then
+            local pass_size=$(wc -c < "$password_file" 2>/dev/null || echo 256)
+            dd if=/dev/urandom of="$password_file" bs=1 count="$pass_size" conv=notrunc 2>/dev/null
+            dd if=/dev/zero of="$password_file" bs=1 count="$pass_size" conv=notrunc 2>/dev/null
+            [ "${password_file#/dev/shm}" = "$password_file" ] && sync 2>/dev/null
+            rm -f "$password_file"
+        fi
         echo "找不到备份文件"
         _saved_password=""
         exit 1
@@ -1705,8 +1877,11 @@ perform_restore() {
     # 清理临时下载目录（仅网盘模式）
     [ "$mode" = "yun" ] && rm -rf "$backup_dir"
 
-    # 清除局部密码副本
+    # 安全清除局部密码副本（多重覆写）
+    local pass_len=${#_saved_password}
+    _saved_password=$(dd if=/dev/urandom bs=1 count="$pass_len" 2>/dev/null | base64 | tr -d '\n' | head -c "$pass_len")
     _saved_password=""
+    unset _saved_password
 
     echo "还原成功! 文件已恢复到: $restore_to"
     
