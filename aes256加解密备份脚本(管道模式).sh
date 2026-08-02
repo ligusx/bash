@@ -398,31 +398,6 @@ get_password_interactively() {
     printf '%s' "$password1"
 }
 
-# 函数: 安全地临时使用密码执行操作
-run_with_password() {
-    local callback="$1"
-    shift
-    
-    # 创建受限权限的临时文件存储密码（仅在需要时）
-    local password_file
-    password_file=$(mktemp) && chmod 600 "$password_file" || {
-        echo "错误: 无法创建安全临时文件"
-        exit 1
-    }
-    
-    # 获取密码并立即写入临时文件
-    get_password_interactively > "$password_file"
-    
-    # 执行回调函数，将密码文件路径作为最后一个参数传递
-    "$callback" "$@" "$password_file"
-    local ret=$?
-    
-    # 立即安全删除密码文件
-    shred -u "$password_file" 2>/dev/null || rm -f "$password_file"
-    
-    return $ret
-}
-
 # ============================================================
 # 安全临时文件创建函数
 # ============================================================
